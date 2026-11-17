@@ -16,6 +16,9 @@ management:
 
 gateway:
   telemetry-enabled: true       # record per-call metrics; never changes the response body
+  security:
+    loopback-only: true         # reject non-loopback callers to /mcp and /api (403) unless a token is set
+    token: ""                   # optional X-Gateway-Token to allow a non-loopback caller
   providers:
     dylext-url: http://localhost:18090    # Dylext /mcp (code structure, git, sessions, ledger, federation)
     sestacon-url: http://localhost:18080  # Sestacon /api/* (doc ingest + retrieval + chat)
