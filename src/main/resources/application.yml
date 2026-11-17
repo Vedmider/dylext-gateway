@@ -4,6 +4,9 @@ server:
 spring:
   application:
     name: dylext-gateway
+  servlet:
+    multipart:
+      enabled: false        # transparent proxy: never parse bodies, forward raw bytes (preserves multipart boundaries)
 
 management:
   endpoints:
@@ -14,5 +17,6 @@ management:
 gateway:
   telemetry-enabled: true       # record per-call metrics; never changes the response body
   providers:
-    dylext-url: http://localhost:18090   # Dylext /mcp (code structure, git, sessions, ledger, federation)
-    # sestacon-url / code-memory-url wired in a later increment when routing moves off Dylext
+    dylext-url: http://localhost:18090    # Dylext /mcp (code structure, git, sessions, ledger, federation)
+    sestacon-url: http://localhost:18080  # Sestacon /api/* (doc ingest + retrieval + chat)
+    # code-memory-url wired when its provider adapter lands
