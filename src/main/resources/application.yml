@@ -22,6 +22,13 @@ gateway:
   connect-timeout-seconds: 2    # TCP connect timeout to an upstream
   upstream-timeout-seconds: 60  # whole-request timeout to an upstream (-> 504 on expiry)
   max-request-bytes: 0          # reject bodies larger than this with 413; 0 = unlimited
+  retry:
+    max-attempts: 2             # total attempts for IDEMPOTENT bodyless methods (1 = no retry)
+    backoff-ms: 100             # linear backoff between attempts (ms * attempt)
+    idempotent-methods: GET,HEAD,OPTIONS   # only these are retried; POST is never retried
+  circuit-breaker:
+    failure-threshold: 5        # consecutive transport/gateway failures before the provider circuit opens
+    open-seconds: 10            # cooldown before a half-open trial
   security:
     loopback-only: true         # reject non-loopback callers to /mcp and /api (403) unless a token is set
     token: ""                   # optional X-Gateway-Token to allow a non-loopback caller

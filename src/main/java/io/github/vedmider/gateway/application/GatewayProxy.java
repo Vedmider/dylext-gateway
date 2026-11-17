@@ -4,127 +4,211 @@ import io.github.vedmider.gateway.domain.model.ProviderModule;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
- * Protocol-agnostic reverse proxy applying standard gateway practice: streams the raw request/response
- * (no heap buffering), filters hop-by-hop + JDK-restricted headers (RFC 7230), adds
- * X-Forwarded-For/Proto/Host and an X-Request-Id correlation id (generated if absent, echoed to the
- * client), enforces a request-size cap, and maps upstream timeout→504 / failure→502. It never parses
- * any application protocol — the body is opaque bytes. Thin and stateless; side effect is telemetry.
+ * Protocol-agnostic reverse proxy with standard gateway resilience/observability:
+ * streams bodies (no heap buffering), filters hop-by-hop/restricted headers, adds X-Forwarded-*,
+ * X-Request-Id (per hop) and X-Trace-Id (per trace, honouring inbound traceparent), enforces a
+ * request-size cap, retries only idempotent+bodyless methods on transport/gateway failures, trips a
+ * per-provider circuit breaker on a flapping upstream, and emits one structured access-log line per
+ * call. Never parses any application protocol — the body is opaque bytes.
  */
 @Service
 public class GatewayProxy {
 
-    /** Hop-by-hop + JDK-restricted headers never copied from the client request. */
+    private static final Logger access = LoggerFactory.getLogger("gateway.access");
+
     private static final Set<String> SKIP_HEADERS = Set.of("host", "content-length", "connection",
             "transfer-encoding", "keep-alive", "te", "trailer", "upgrade", "accept-encoding",
             "expect", "date", "via", "warning", "from");
-
-    /** Forwarding headers the proxy manages itself (so inbound copies are not blindly duplicated). */
     private static final Set<String> MANAGED_HEADERS = Set.of("x-forwarded-for", "x-forwarded-proto",
-            "x-forwarded-host", "x-request-id");
+            "x-forwarded-host", "x-request-id", "x-trace-id");
+    private static final Set<Integer> RETRYABLE_STATUS = Set.of(502, 503, 504);
 
     static final String REQUEST_ID = "X-Request-Id";
+    static final String TRACE_ID = "X-Trace-Id";
 
     private final HttpClient http;
     private final RouteRegistry routes;
     private final MeterRegistry metrics;
+    private final CircuitBreakerRegistry breakers;
     private final boolean telemetryEnabled;
     private final Duration upstreamTimeout;
     private final long maxRequestBytes;
+    private final int retryMaxAttempts;
+    private final long retryBackoffMs;
+    private final Set<String> idempotentMethods;
 
-    public GatewayProxy(RouteRegistry routes, MeterRegistry metrics,
+    public GatewayProxy(RouteRegistry routes, MeterRegistry metrics, CircuitBreakerRegistry breakers,
                         @Value("${gateway.telemetry-enabled:true}") boolean telemetryEnabled,
                         @Value("${gateway.connect-timeout-seconds:2}") long connectTimeoutSeconds,
                         @Value("${gateway.upstream-timeout-seconds:60}") long upstreamTimeoutSeconds,
-                        @Value("${gateway.max-request-bytes:0}") long maxRequestBytes) {
+                        @Value("${gateway.max-request-bytes:0}") long maxRequestBytes,
+                        @Value("${gateway.retry.max-attempts:2}") int retryMaxAttempts,
+                        @Value("${gateway.retry.backoff-ms:100}") long retryBackoffMs,
+                        @Value("${gateway.retry.idempotent-methods:GET,HEAD,OPTIONS}") String idempotentMethods) {
         this.routes = routes;
         this.metrics = metrics;
+        this.breakers = breakers;
         this.telemetryEnabled = telemetryEnabled;
         this.upstreamTimeout = Duration.ofSeconds(upstreamTimeoutSeconds);
         this.maxRequestBytes = maxRequestBytes;
+        this.retryMaxAttempts = Math.max(1, retryMaxAttempts);
+        this.retryBackoffMs = retryBackoffMs;
+        this.idempotentMethods = Arrays.stream(idempotentMethods.split(","))
+                .map(String::trim).map(String::toUpperCase).filter(s -> !s.isEmpty())
+                .collect(Collectors.toUnmodifiableSet());
         this.http = HttpClient.newBuilder()
-                .version(HttpClient.Version.HTTP_1_1)      // upstreams are plain HTTP/1.1; avoid h2c upgrade headers
+                .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(connectTimeoutSeconds)).build();
     }
 
     public void forward(HttpServletRequest request, HttpServletResponse response) throws Exception {
-        ProviderModule module = routes.match(request.getRequestURI()).orElse(null);
-        if (module == null) {
-            response.sendError(HttpServletResponse.SC_NOT_FOUND,
-                    "no provider module for path: " + request.getRequestURI());
-            return;
-        }
-        String requestId = correlationId(request);
-        response.setHeader(REQUEST_ID, requestId);     // echo so the caller can trace the request
-        if (maxRequestBytes > 0 && request.getContentLengthLong() > maxRequestBytes) {
-            response.sendError(HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE,
-                    "request body exceeds " + maxRequestBytes + " bytes");
-            return;
-        }
         long start = System.nanoTime();
-        int status = HttpServletResponse.SC_BAD_GATEWAY;
+        String requestId = correlationId(request);
+        String traceId = traceId(request);
+        MDC.put("requestId", requestId);
+        MDC.put("traceId", traceId);
+        response.setHeader(REQUEST_ID, requestId);
+        response.setHeader(TRACE_ID, traceId);
+
+        ProviderModule module = routes.match(request.getRequestURI()).orElse(null);
+        String provider = module == null ? "none" : module.name();
+        int status = HttpServletResponse.SC_INTERNAL_SERVER_ERROR;
         try {
-            status = proxyTo(module, request, response, requestId);
-        } finally {
-            if (telemetryEnabled) {
-                metrics.timer("gateway.proxy", "provider", module.name(), "route", module.pathPrefix(),
-                                "method", request.getMethod(), "status", Integer.toString(status))
-                        .record(System.nanoTime() - start, TimeUnit.NANOSECONDS);
+            if (module == null) {
+                response.sendError(status = HttpServletResponse.SC_NOT_FOUND,
+                        "no provider module for path: " + request.getRequestURI());
+            } else if (maxRequestBytes > 0 && request.getContentLengthLong() > maxRequestBytes) {
+                response.sendError(status = HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE,
+                        "request body exceeds " + maxRequestBytes + " bytes");
+            } else {
+                status = proxyTo(module, request, response, requestId, traceId);
             }
+        } finally {
+            long ms = (System.nanoTime() - start) / 1_000_000;
+            if (telemetryEnabled) {
+                metrics.timer("gateway.proxy", "provider", provider, "method", request.getMethod(),
+                        "status", Integer.toString(status)).record(System.nanoTime() - start, TimeUnit.NANOSECONDS);
+            }
+            access.info("method={} path={} provider={} status={} durationMs={} requestId={} traceId={} client={}",
+                    request.getMethod(), request.getRequestURI(), provider, status, ms, requestId, traceId,
+                    request.getRemoteAddr());
+            MDC.remove("requestId");
+            MDC.remove("traceId");
         }
     }
 
     private int proxyTo(ProviderModule module, HttpServletRequest request, HttpServletResponse response,
-                        String requestId) throws Exception {
+                        String requestId, String traceId) throws Exception {
+        CircuitBreaker breaker = breakers.forProvider(module.name());
+        if (!breaker.allow()) {
+            response.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                    module.name() + " circuit open");
+            return HttpServletResponse.SC_SERVICE_UNAVAILABLE;
+        }
         String query = request.getQueryString();
         URI target = URI.create(module.upstreamBaseUrl() + request.getRequestURI()
                 + (query == null ? "" : "?" + query));
+        boolean replayable = idempotentMethods.contains(request.getMethod()) && isBodyless(request);
+        int attempts = replayable ? retryMaxAttempts : 1;
 
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            HttpRequest outbound = buildRequest(target, request, requestId, traceId);
+            HttpResponse<InputStream> upstream;
+            try {
+                upstream = http.send(outbound, HttpResponse.BodyHandlers.ofInputStream());
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                breaker.recordFailure();
+                response.sendError(HttpServletResponse.SC_BAD_GATEWAY, module.name() + " proxy interrupted");
+                return HttpServletResponse.SC_BAD_GATEWAY;
+            } catch (IOException transportFailure) {
+                breaker.recordFailure();
+                if (attempt < attempts && backoff(attempt)) {
+                    continue;
+                }
+                int code = transportFailure instanceof HttpTimeoutException
+                        ? HttpServletResponse.SC_GATEWAY_TIMEOUT : HttpServletResponse.SC_BAD_GATEWAY;
+                response.sendError(code, module.name() + " upstream unreachable");
+                return code;
+            }
+
+            int statusCode = upstream.statusCode();
+            if (RETRYABLE_STATUS.contains(statusCode)) {
+                breaker.recordFailure();
+                if (attempt < attempts && backoff(attempt)) {
+                    drain(upstream);
+                    continue;
+                }
+            } else {
+                breaker.recordSuccess();
+            }
+            writeResponse(response, upstream);
+            return statusCode;
+        }
+        response.sendError(HttpServletResponse.SC_BAD_GATEWAY, module.name() + " proxy exhausted retries");
+        return HttpServletResponse.SC_BAD_GATEWAY;
+    }
+
+    private HttpRequest buildRequest(URI target, HttpServletRequest request, String requestId, String traceId) {
         HttpRequest.Builder out = HttpRequest.newBuilder(target).timeout(upstreamTimeout)
                 .method(request.getMethod(), bodyPublisher(request));
         copyRequestHeaders(request, out);
-        addForwardingHeaders(request, out, requestId);
+        addForwardingHeaders(request, out, requestId, traceId);
+        return out.build();
+    }
 
-        HttpResponse<InputStream> upstream;
-        try {
-            upstream = http.send(out.build(), HttpResponse.BodyHandlers.ofInputStream());
-        } catch (HttpTimeoutException timeout) {
-            response.sendError(HttpServletResponse.SC_GATEWAY_TIMEOUT, module.name() + " upstream timed out");
-            return HttpServletResponse.SC_GATEWAY_TIMEOUT;
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            response.sendError(HttpServletResponse.SC_BAD_GATEWAY, module.name() + " proxy interrupted");
-            return HttpServletResponse.SC_BAD_GATEWAY;
-        } catch (Exception unreachable) {
-            response.sendError(HttpServletResponse.SC_BAD_GATEWAY, module.name() + " upstream unreachable");
-            return HttpServletResponse.SC_BAD_GATEWAY;
-        }
-
+    private static void writeResponse(HttpServletResponse response, HttpResponse<InputStream> upstream)
+            throws IOException {
         response.setStatus(upstream.statusCode());
         upstream.headers().map().forEach((k, vs) -> {
-            if (!SKIP_HEADERS.contains(k.toLowerCase()) && !k.equalsIgnoreCase(REQUEST_ID)) {
+            if (!SKIP_HEADERS.contains(k.toLowerCase()) && !MANAGED_HEADERS.contains(k.toLowerCase())) {
                 vs.forEach(v -> response.addHeader(k, v));
             }
         });
         try (InputStream in = upstream.body()) {
             in.transferTo(response.getOutputStream());
         }
-        return upstream.statusCode();
+    }
+
+    private static void drain(HttpResponse<InputStream> upstream) {
+        try (InputStream in = upstream.body()) {
+            in.transferTo(OutputStream.nullOutputStream());
+        } catch (IOException ignored) {
+            // releasing the retried response's connection; nothing to do on failure
+        }
+    }
+
+    private boolean backoff(int attempt) {
+        try {
+            Thread.sleep(retryBackoffMs * attempt);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private static void copyRequestHeaders(HttpServletRequest request, HttpRequest.Builder out) {
@@ -146,9 +230,8 @@ public class GatewayProxy {
         }
     }
 
-    /** Standard X-Forwarded-* chain + correlation id so upstreams see the original caller. */
     private static void addForwardingHeaders(HttpServletRequest request, HttpRequest.Builder out,
-                                             String requestId) {
+                                             String requestId, String traceId) {
         String priorFor = request.getHeader("X-Forwarded-For");
         String client = request.getRemoteAddr();
         out.header("X-Forwarded-For", priorFor == null || priorFor.isBlank() ? client : priorFor + ", " + client);
@@ -158,19 +241,16 @@ public class GatewayProxy {
             out.header("X-Forwarded-Host", host);
         }
         out.header(REQUEST_ID, requestId);
+        out.header(TRACE_ID, traceId);
     }
 
-    private static String correlationId(HttpServletRequest request) {
-        String existing = request.getHeader(REQUEST_ID);
-        return existing == null || existing.isBlank() ? UUID.randomUUID().toString() : existing;
+    private static boolean isBodyless(HttpServletRequest request) {
+        return request.getContentLengthLong() <= 0;
     }
 
-    /** Stream the body straight from the servlet input unless the request has none. */
     private static HttpRequest.BodyPublisher bodyPublisher(HttpServletRequest request) {
         String method = request.getMethod();
-        boolean bodyless = ("GET".equals(method) || "HEAD".equals(method))
-                && request.getContentLengthLong() <= 0;
-        if (bodyless) {
+        if (("GET".equals(method) || "HEAD".equals(method)) && isBodyless(request)) {
             return HttpRequest.BodyPublishers.noBody();
         }
         return HttpRequest.BodyPublishers.ofInputStream(() -> {
@@ -180,5 +260,23 @@ public class GatewayProxy {
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    private static String correlationId(HttpServletRequest request) {
+        String existing = request.getHeader(REQUEST_ID);
+        return existing == null || existing.isBlank() ? UUID.randomUUID().toString() : existing;
+    }
+
+    /** W3C traceparent trace-id if present, else inbound X-Trace-Id, else a fresh 32-hex id. */
+    private static String traceId(HttpServletRequest request) {
+        String traceparent = request.getHeader("traceparent");
+        if (traceparent != null) {
+            String[] parts = traceparent.split("-");
+            if (parts.length >= 2 && parts[1].length() == 32) {
+                return parts[1];
+            }
+        }
+        String header = request.getHeader(TRACE_ID);
+        return header == null || header.isBlank() ? UUID.randomUUID().toString().replace("-", "") : header;
     }
 }
