@@ -27,8 +27,18 @@ Metrics: `GET /actuator/prometheus` (`gateway.calls` timer tagged provider/tool/
 Security: bind loopback-only in deployment (add an access filter, as Dylext does for `/mcp`).
 
 ## Enterprise setup & support
-Running this in production or wiring it into your stack? Commercial licensing, integration, support and
-SLAs: **andrii.lisovets@gmail.com**.
+The gateway is free for non-production use. If you want to run it in production — or want the whole
+Dylext + Sestacon stack wired into your infrastructure without the lift — we offer commercial engagements:
+
+- **Production/commercial license** — unlock production and competitive use before the Change Date.
+- **Integration & setup** — deploy into your infrastructure (on-prem, VPC, or air-gapped) and wire the
+  gateway + providers to your repositories, CI, IDEs, and AI agents / MCP clients.
+- **Custom development** — new provider modules, routing/compose policies, and features prioritized for your roadmap.
+- **Support & SLAs** — priority support, security reviews, upgrade assistance, and guaranteed response times.
+- **Team enablement** — onboarding your engineers onto token-efficient, grounded AI workflows.
+
+📩 Talk to us: **andrii.lisovets@gmail.com** — tell us your repos, scale, and the AI agents you run,
+and we'll scope an integration.
 
 ## License
 Source-available under the [Business Source License 1.1](LICENSE) — © 2026 Andrii Lisovets.
