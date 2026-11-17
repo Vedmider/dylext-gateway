@@ -46,7 +46,13 @@ public class LoopbackAccessFilter extends OncePerRequestFilter {
     }
 
     private boolean hasValidToken(HttpServletRequest request) {
-        return !token.isBlank() && token.equals(request.getHeader("X-Gateway-Token"));
+        if (token.isBlank()) {
+            return false;
+        }
+        String presented = request.getHeader("X-Gateway-Token");
+        return presented != null && java.security.MessageDigest.isEqual(
+                token.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                presented.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private static boolean isLoopback(String remoteAddr) {
