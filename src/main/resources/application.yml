@@ -8,6 +8,10 @@ spring:
     multipart:
       enabled: false        # transparent proxy: never parse bodies, forward raw bytes (preserves multipart boundaries)
 
+logging:
+  pattern:
+    level: "%5p [trace=%X{traceId:-} req=%X{requestId:-}]"   # cross-service correlation on every log line
+
 management:
   endpoints:
     web:
@@ -33,6 +37,5 @@ gateway:
     loopback-only: true         # reject non-loopback callers to /mcp and /api (403) unless a token is set
     token: ""                   # optional X-Gateway-Token to allow a non-loopback caller
   providers:
-    dylext-url: http://localhost:18090    # Dylext /mcp (code structure, git, sessions, ledger, federation)
-    sestacon-url: http://localhost:18080  # Sestacon /api/* (doc ingest + retrieval + chat)
-    # code-memory-url wired when its provider adapter lands
+    dylext-url: http://localhost:18090    # Dylext /mcp (dynamic code structure + git)
+    sestacon-url: http://localhost:18080  # Sestacon /api/* (static doc ingest + retrieval)
