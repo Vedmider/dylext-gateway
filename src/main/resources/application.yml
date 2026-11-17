@@ -1,0 +1,18 @@
+server:
+  port: 18070            # gateway front door (Dylext 18090, Sestacon 18080)
+
+spring:
+  application:
+    name: dylext-gateway
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+gateway:
+  telemetry-enabled: true       # record per-call metrics; never changes the response body
+  providers:
+    dylext-url: http://localhost:18090   # Dylext /mcp (code structure, git, sessions, ledger, federation)
+    # sestacon-url / code-memory-url wired in a later increment when routing moves off Dylext
