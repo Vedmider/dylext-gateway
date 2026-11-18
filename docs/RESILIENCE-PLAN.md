@@ -16,7 +16,7 @@ bus, no multi-service transactions, no OFFSET paging in the stack).
 | 5 | **Retries + exponential backoff + jitter** | **DO NOW** | gateway (Phase A) | Retries exist but backoff is linear with **no jitter** → synchronized-retry risk. |
 | 6 | **Bulkhead (resource isolation)** | **DO NOW** | gateway (Phase B) | One shared HttpClient today; a slow Sestacon can starve Dylext. Circuit breaker is only half the isolation. |
 | 7 | CAP / PACELC consistency model | **DO NOW (doc)** | dylext docs (Phase D) | Freshness-on-read = PACELC "EC"; Sestacon = AP-ish. Make the posture explicit. |
-| 8 | Keyset (cursor) pagination vs OFFSET | DEFER (when needed) | dylext | No `OFFSET` in the stack today (verified); only relevant if deep pagination is added to search/impact/recent_changes. |
+| 8 | Keyset (cursor) pagination vs OFFSET | DONE (fit-adjusted) | dylext | No `OFFSET` in the stack; `search_symbols` is relevance-ordered and `impact_of` is signal-ranked, so neither has a stable keyset cursor. Implemented the applicable large-dataset control instead: an opt-in **top-N cap** on `impact_of` (the only unbounded list) — `limit` returns the top ranked callers with `truncated`+`totalCallers`. `search_symbols` already caps via `topK`. |
 | 9 | Backpressure (reactive streams) | DEFER (when needed) | — | Blocking Spring MVC, not WebFlux; only relevant if large responses are streamed. |
 | 10 | Idempotency keys for retried writes | DEFER (when needed) | gateway | X-Request-Id already stamped; wire request-id dedup only if a retriable write path appears. |
 
