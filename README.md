@@ -43,4 +43,4 @@ and we'll scope an integration.
 ## License
 Source-available under the [Business Source License 1.1](LICENSE) — © 2026 Andrii Lisovets.
 Non-production use is free; production use requires a commercial license until the Change Date
-(2029-11-17 for v0.1.0), when each version converts to Apache-2.0.
+(2029-11-18 for v0.2.0), when each version converts to Apache-2.0.

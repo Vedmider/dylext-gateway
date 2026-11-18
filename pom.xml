@@ -13,7 +13,7 @@
 
     <groupId>io.github.vedmider</groupId>
     <artifactId>dylext-gateway</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
     <name>dylext-gateway</name>
     <description>Thin, stateless MCP front door that routes to context providers (Dylext, Sestacon, code-memory).</description>
 
