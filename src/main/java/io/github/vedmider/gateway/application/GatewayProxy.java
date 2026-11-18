@@ -53,29 +53,40 @@ public class GatewayProxy {
     private final RouteRegistry routes;
     private final MeterRegistry metrics;
     private final CircuitBreakerRegistry breakers;
+    private final RateLimiterRegistry rateLimiters;
+    private final BulkheadRegistry bulkheads;
     private final boolean telemetryEnabled;
     private final Duration upstreamTimeout;
     private final long maxRequestBytes;
     private final int retryMaxAttempts;
     private final long retryBackoffMs;
+    private final long retryBackoffCapMs;
+    private final boolean retryJitter;
     private final Set<String> idempotentMethods;
 
     public GatewayProxy(RouteRegistry routes, MeterRegistry metrics, CircuitBreakerRegistry breakers,
+                        RateLimiterRegistry rateLimiters, BulkheadRegistry bulkheads,
                         @Value("${gateway.telemetry-enabled:true}") boolean telemetryEnabled,
                         @Value("${gateway.connect-timeout-seconds:2}") long connectTimeoutSeconds,
                         @Value("${gateway.upstream-timeout-seconds:60}") long upstreamTimeoutSeconds,
                         @Value("${gateway.max-request-bytes:0}") long maxRequestBytes,
                         @Value("${gateway.retry.max-attempts:2}") int retryMaxAttempts,
                         @Value("${gateway.retry.backoff-ms:100}") long retryBackoffMs,
+                        @Value("${gateway.retry.backoff-cap-ms:2000}") long retryBackoffCapMs,
+                        @Value("${gateway.retry.jitter:true}") boolean retryJitter,
                         @Value("${gateway.retry.idempotent-methods:GET,HEAD,OPTIONS}") String idempotentMethods) {
         this.routes = routes;
         this.metrics = metrics;
         this.breakers = breakers;
+        this.rateLimiters = rateLimiters;
+        this.bulkheads = bulkheads;
         this.telemetryEnabled = telemetryEnabled;
         this.upstreamTimeout = Duration.ofSeconds(upstreamTimeoutSeconds);
         this.maxRequestBytes = maxRequestBytes;
         this.retryMaxAttempts = Math.max(1, retryMaxAttempts);
         this.retryBackoffMs = retryBackoffMs;
+        this.retryBackoffCapMs = retryBackoffCapMs <= 0 ? retryBackoffMs : retryBackoffCapMs;
+        this.retryJitter = retryJitter;
         this.idempotentMethods = Arrays.stream(idempotentMethods.split(","))
                 .map(String::trim).map(String::toUpperCase).filter(s -> !s.isEmpty())
                 .collect(Collectors.toUnmodifiableSet());
@@ -122,12 +133,39 @@ public class GatewayProxy {
 
     private int proxyTo(ProviderModule module, HttpServletRequest request, HttpServletResponse response,
                         String requestId, String traceId) throws Exception {
+        TokenBucket limiter = rateLimiters.forProvider(module.name());
+        if (!limiter.tryConsume()) {
+            long retryAfterMs = limiter.millisUntilNextToken();
+            response.setHeader("Retry-After", Long.toString(Math.max(1, (retryAfterMs + 999) / 1000)));
+            if (telemetryEnabled) {
+                metrics.counter("gateway.rate_limit.rejected", "provider", module.name()).increment();
+            }
+            response.sendError(429, module.name() + " rate limit exceeded");
+            return 429;
+        }
         CircuitBreaker breaker = breakers.forProvider(module.name());
         if (!breaker.allow()) {
             response.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE,
                     module.name() + " circuit open");
             return HttpServletResponse.SC_SERVICE_UNAVAILABLE;
         }
+        Bulkhead bulkhead = bulkheads.forProvider(module.name());
+        if (!bulkhead.tryAcquire()) {
+            if (telemetryEnabled) {
+                metrics.counter("gateway.bulkhead.rejected", "provider", module.name()).increment();
+            }
+            response.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE, module.name() + " at capacity");
+            return HttpServletResponse.SC_SERVICE_UNAVAILABLE;
+        }
+        try {
+            return send(module, request, response, requestId, traceId, breaker);
+        } finally {
+            bulkhead.release();
+        }
+    }
+
+    private int send(ProviderModule module, HttpServletRequest request, HttpServletResponse response,
+                     String requestId, String traceId, CircuitBreaker breaker) throws Exception {
         String query = request.getQueryString();
         URI target = URI.create(module.upstreamBaseUrl() + request.getRequestURI()
                 + (query == null ? "" : "?" + query));
@@ -203,12 +241,18 @@ public class GatewayProxy {
 
     private boolean backoff(int attempt) {
         try {
-            Thread.sleep(retryBackoffMs * attempt);
+            Thread.sleep(computeBackoffMs(attempt, java.util.concurrent.ThreadLocalRandom.current().nextDouble()));
             return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
         }
+    }
+
+    /** Exponential backoff (base*2^(attempt-1)) capped, with full jitter in [0, delay]. Package-private for tests. */
+    long computeBackoffMs(int attempt, double rand01) {
+        long exp = (long) Math.min((double) retryBackoffCapMs, retryBackoffMs * Math.pow(2, attempt - 1));
+        return retryJitter ? (long) (rand01 * exp) : exp;
     }
 
     private static void copyRequestHeaders(HttpServletRequest request, HttpRequest.Builder out) {

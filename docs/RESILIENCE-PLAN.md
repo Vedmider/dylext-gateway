@@ -21,11 +21,11 @@ bus, no multi-service transactions, no OFFSET paging in the stack).
 | 10 | Idempotency keys for retried writes | DEFER (when needed) | gateway | X-Request-Id already stamped; wire request-id dedup only if a retriable write path appears. |
 
 ## Status checklist (DO-NOW items)
-- [ ] Phase A — retry exponential backoff + jitter (gateway)
-- [ ] Phase B — per-provider bulkhead (gateway)
-- [ ] Phase C — rate limiting / token bucket (gateway)
-- [ ] Phase D — PACELC consistency note (dylext `docs/ARCHITECTURE.md`)
-- [ ] `mvn verify` green in dylext-gateway; live smoke through :18070; defaults inert
+- [x] Phase A — retry exponential backoff + jitter (gateway) — `computeBackoffMs`, config `backoff-cap-ms`/`jitter`
+- [x] Phase B — per-provider bulkhead (gateway) — `Bulkhead`/`BulkheadRegistry`, 503 when full
+- [x] Phase C — rate limiting / token bucket (gateway) — `TokenBucket`/`RateLimiterRegistry`, 429 + Retry-After
+- [x] Phase D — PACELC consistency note (dylext `docs/ARCHITECTURE.md`)
+- [x] `mvn verify` green in dylext-gateway; live smoke through :18070 (429 observed); defaults inert
 
 The gateway is the single ingress, so it is the right place for ingress protection. It already has:
 retries (idempotent+bodyless), a per-provider circuit breaker, request-size cap, X-Request/Trace-Id,

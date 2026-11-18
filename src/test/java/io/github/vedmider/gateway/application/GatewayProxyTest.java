@@ -62,9 +62,16 @@ class GatewayProxyTest {
 
     private GatewayProxy proxy(String sestaconUrl, long maxBytes, int retryAttempts,
                                CircuitBreakerRegistry breakers) {
+        return proxy(sestaconUrl, maxBytes, retryAttempts, breakers,
+                new RateLimiterRegistry(0, 0), new BulkheadRegistry(0, 0));
+    }
+
+    private GatewayProxy proxy(String sestaconUrl, long maxBytes, int retryAttempts,
+                               CircuitBreakerRegistry breakers, RateLimiterRegistry limiters,
+                               BulkheadRegistry bulkheads) {
         RouteRegistry routes = new RouteRegistry("http://127.0.0.1:1", sestaconUrl);
-        return new GatewayProxy(routes, new SimpleMeterRegistry(), breakers, false, 2, 60, maxBytes,
-                retryAttempts, 1, "GET,HEAD,OPTIONS");
+        return new GatewayProxy(routes, new SimpleMeterRegistry(), breakers, limiters, bulkheads,
+                false, 2, 60, maxBytes, retryAttempts, 1, 2000, true, "GET,HEAD,OPTIONS");
     }
 
     private MockHttpServletResponse run(GatewayProxy proxy, MockHttpServletRequest req) throws Exception {
@@ -96,6 +103,38 @@ class GatewayProxyTest {
         assertThat(seenBody).isEqualTo("hello");
         assertThat(seenHeaders).containsKey("X-roles");
         assertThat(seenHeaders.getOrDefault("Connection", List.of())).doesNotContain("keep-alive");
+    }
+
+    @Test
+    void backoffIsCappedExponentialWithFullJitter() {
+        GatewayProxy p = proxy(url(), 0);                       // base=1ms, cap=2000ms, jitter=true
+        assertThat(p.computeBackoffMs(1, 1.0)).isEqualTo(1);    // base
+        assertThat(p.computeBackoffMs(3, 1.0)).isEqualTo(4);    // base * 2^(3-1)
+        assertThat(p.computeBackoffMs(3, 0.0)).isEqualTo(0);    // full-jitter floor
+        assertThat(p.computeBackoffMs(20, 1.0)).isEqualTo(2000); // capped
+    }
+
+    @Test
+    void rateLimitExceededReturns429WithRetryAfter() throws Exception {
+        RateLimiterRegistry limiters = new RateLimiterRegistry(0.001, 1);   // burst 1, ~never refills
+        GatewayProxy p = proxy(url(), 0, 1, new CircuitBreakerRegistry(5, 10), limiters, new BulkheadRegistry(0, 0));
+        MockHttpServletRequest r1 = new MockHttpServletRequest("GET", "/api/echo");
+        MockHttpServletRequest r2 = new MockHttpServletRequest("GET", "/api/echo");
+
+        assertThat(run(p, r1).getStatus()).isEqualTo(200);         // first consumes the only token
+        MockHttpServletResponse res2 = run(p, r2);
+        assertThat(res2.getStatus()).isEqualTo(429);               // second is rate-limited
+        assertThat(res2.getHeader("Retry-After")).isNotNull();
+    }
+
+    @Test
+    void bulkheadFullReturns503() throws Exception {
+        BulkheadRegistry bulkheads = new BulkheadRegistry(1, 0);    // one permit, fast-reject
+        bulkheads.forProvider("sestacon").tryAcquire();            // occupy the only permit
+        GatewayProxy p = proxy(url(), 0, 1, new CircuitBreakerRegistry(5, 10), new RateLimiterRegistry(0, 0), bulkheads);
+
+        MockHttpServletResponse res = run(p, new MockHttpServletRequest("GET", "/api/echo"));
+        assertThat(res.getStatus()).isEqualTo(503);                // provider at capacity
     }
 
     @Test

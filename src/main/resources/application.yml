@@ -28,11 +28,19 @@ gateway:
   max-request-bytes: 0          # reject bodies larger than this with 413; 0 = unlimited
   retry:
     max-attempts: 2             # total attempts for IDEMPOTENT bodyless methods (1 = no retry)
-    backoff-ms: 100             # linear backoff between attempts (ms * attempt)
+    backoff-ms: 100             # base backoff between attempts
+    backoff-cap-ms: 2000        # exponential backoff is capped here (base*2^(n-1), capped)
+    jitter: true                # full jitter in [0, delay] to avoid synchronized retry storms
     idempotent-methods: GET,HEAD,OPTIONS   # only these are retried; POST is never retried
   circuit-breaker:
     failure-threshold: 5        # consecutive transport/gateway failures before the provider circuit opens
     open-seconds: 10            # cooldown before a half-open trial
+  rate-limit:
+    requests-per-second: 0      # per-provider token-bucket refill rate; 0 = unlimited (off)
+    burst: 0                    # bucket capacity (short-burst allowance); 0 = default to requests-per-second
+  bulkhead:
+    max-concurrent: 0           # per-provider cap on in-flight upstream calls; 0 = unlimited (off)
+    acquire-timeout-ms: 0       # wait this long for a permit before rejecting with 503; 0 = fast-reject
   security:
     loopback-only: true         # reject non-loopback callers to /mcp and /api (403) unless a token is set
     token: ""                   # optional X-Gateway-Token to allow a non-loopback caller
