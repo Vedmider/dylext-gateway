@@ -7,9 +7,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Single ingress. Every provider-bound path ({@code /mcp**}, {@code /api/**}) is forwarded raw by
+ * Transparent reverse proxy for provider REST paths ({@code /api/**}), forwarded raw by
  * {@link GatewayProxy}; actuator and other local endpoints are untouched. Protocol-agnostic — this
- * controller reads no body and knows no application protocol.
+ * controller reads no body and knows no application protocol. MCP ({@code POST /mcp}) is NOT proxied
+ * here: it is terminated and aggregated by {@link McpAggregatorController}.
  */
 @RestController
 public class ProxyController {
@@ -20,7 +21,7 @@ public class ProxyController {
         this.proxy = proxy;
     }
 
-    @RequestMapping({"/mcp", "/mcp/**", "/api/**"})
+    @RequestMapping({"/api/**"})
     public void proxy(HttpServletRequest request, HttpServletResponse response) throws Exception {
         proxy.forward(request, response);
     }
