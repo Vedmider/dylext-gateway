@@ -1,0 +1,28 @@
+name: Bug report
+description: Something is wrong or produces an incorrect result
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Exact request to the gateway (:18070), the target provider, and the response.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Java version, which providers (Dylext/Sestacon) were running.

@@ -1,5 +1,10 @@
 # dylext-gateway
 
+[![CI](https://github.com/Vedmider/dylext-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Vedmider/dylext-gateway/actions/workflows/ci.yml)
+[![Java 21](https://img.shields.io/badge/Java-21-orange.svg)](https://adoptium.net)
+[![Spring Boot 3.3](https://img.shields.io/badge/Spring%20Boot-3.3-brightgreen.svg)](https://spring.io/projects/spring-boot)
+[![License: BSL 1.1](https://img.shields.io/badge/license-BSL--1.1-blue.svg)](LICENSE)
+
 A **thin, stateless MCP front door** for the context ecosystem. Agents talk to the gateway; it routes
 each tool call to the provider that owns it — **Dylext** (exact code + git), **Sestacon** (doc RAG),
 **code-memory** (fuzzy recall) — records per-call telemetry, and returns the provider's result
