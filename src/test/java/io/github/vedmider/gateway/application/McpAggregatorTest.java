@@ -20,6 +20,7 @@ class McpAggregatorTest {
 
     private HttpServer stub;
     private McpAggregator aggregator;
+    private String base;
     private final ObjectMapper json = new ObjectMapper();
     private final AtomicReference<String> lastMcpBody = new AtomicReference<>();
     private final AtomicReference<String> lastApiPath = new AtomicReference<>();
@@ -50,8 +51,10 @@ class McpAggregatorTest {
             respond(exchange, 200, "[{\"text\":\"chunk about zorblax\",\"source\":\"doc.md\",\"score\":0.9}]");
         });
         stub.start();
-        String base = "http://127.0.0.1:" + stub.getAddress().getPort();
-        aggregator = new McpAggregator(new RouteRegistry(base, base), 5);
+        base = "http://127.0.0.1:" + stub.getAddress().getPort();
+        aggregator = new McpAggregator(new RouteRegistry(base, base),
+                new CircuitBreakerRegistry(5, 10_000), new RateLimiterRegistry(0, 0),
+                new BulkheadRegistry(0, 0), 5);
     }
 
     @AfterEach
@@ -129,5 +132,21 @@ class McpAggregatorTest {
     void aNotificationGetsNoResponse() {
         assertThat(aggregator.handle(
                 "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}")).isNull();
+    }
+
+    @Test
+    void anUpstreamGuardRejectionIsReturnedAsAJsonRpcError() throws Exception {
+        // A capacity-1 bucket (rps ~0): the first sestacon call passes, the second is rate-limited —
+        // proving MCP upstream calls get the same per-provider guards as the REST proxy.
+        McpAggregator limited = new McpAggregator(new RouteRegistry(base, base),
+                new CircuitBreakerRegistry(5, 10_000), new RateLimiterRegistry(0.001, 1),
+                new BulkheadRegistry(0, 0), 5);
+        String req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{"
+                + "\"name\":\"sestacon_retrieve\",\"arguments\":{\"query\":\"x\"}}}";
+
+        assertThat(json.readTree(limited.handle(req)).has("result")).isTrue();
+        JsonNode second = json.readTree(limited.handle(req));
+        assertThat(second.path("error").path("code").asInt()).isEqualTo(-32603);
+        assertThat(second.path("error").path("message").asText()).contains("rate limit");
     }
 }

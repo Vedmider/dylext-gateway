@@ -39,11 +39,18 @@ public class McpAggregator {
     private final String dylextMcpUrl;
     private final String sestaconBaseUrl;
     private final Duration timeout;
+    private final CircuitBreakerRegistry breakers;
+    private final RateLimiterRegistry rateLimiters;
+    private final BulkheadRegistry bulkheads;
 
-    public McpAggregator(RouteRegistry routes,
+    public McpAggregator(RouteRegistry routes, CircuitBreakerRegistry breakers,
+                         RateLimiterRegistry rateLimiters, BulkheadRegistry bulkheads,
                          @Value("${gateway.upstream-timeout-seconds:60}") long timeoutSeconds) {
         this.dylextMcpUrl = upstream(routes, "dylext") + "/mcp";
         this.sestaconBaseUrl = upstream(routes, "sestacon");
+        this.breakers = breakers;
+        this.rateLimiters = rateLimiters;
+        this.bulkheads = bulkheads;
         this.timeout = Duration.ofSeconds(timeoutSeconds);
         this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
     }
@@ -77,6 +84,8 @@ public class McpAggregator {
                     yield id == null ? null : error(id, -32601, "method not found: " + method);
                 }
             };
+        } catch (UpstreamUnavailable unavailable) {
+            return error(id, -32603, unavailable.getMessage());
         } catch (IllegalArgumentException bad) {
             return error(id, -32602, bad.getMessage());
         } catch (Exception e) {
@@ -99,7 +108,7 @@ public class McpAggregator {
         ArrayNode tools = result.putArray("tools");
         try {
             HttpResponse<String> r = send("POST", dylextMcpUrl,
-                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", null);
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", null, "dylext");
             JsonNode dylextTools = json.readTree(r.body()).path("result").path("tools");
             if (dylextTools.isArray()) {
                 dylextTools.forEach(tools::add);
@@ -120,7 +129,7 @@ public class McpAggregator {
         }
         // Dylext tool: forward the original JSON-RPC verbatim and return Dylext's response as-is
         // (its id/tokens/epoch/cached envelope is preserved).
-        return send("POST", dylextMcpUrl, req.toString(), null).body();
+        return send("POST", dylextMcpUrl, req.toString(), null, "dylext").body();
     }
 
     private ObjectNode sestaconCall(String name, JsonNode args) throws Exception {
@@ -132,12 +141,12 @@ public class McpAggregator {
                 if (args.has("topK")) {
                     body.set("topK", args.get("topK"));
                 }
-                yield send("POST", sestaconBaseUrl + "/api/retrieve", body.toString(), roles);
+                yield send("POST", sestaconBaseUrl + "/api/retrieve", body.toString(), roles, "sestacon");
             }
             case "sestacon_chat" -> {
                 ObjectNode body = json.createObjectNode();
                 body.set("question", requireText(args, "question"));
-                yield send("POST", sestaconBaseUrl + "/api/chat", body.toString(), roles);
+                yield send("POST", sestaconBaseUrl + "/api/chat", body.toString(), roles, "sestacon");
             }
             case "sestacon_ingest" -> {
                 if (!args.path("chunks").isArray()) {
@@ -145,13 +154,15 @@ public class McpAggregator {
                 }
                 String q = args.hasNonNull("sourceSystem")
                         ? "?sourceSystem=" + enc(args.get("sourceSystem").asText()) : "";
-                yield send("POST", sestaconBaseUrl + "/api/documents" + q, args.get("chunks").toString(), roles);
+                yield send("POST", sestaconBaseUrl + "/api/documents" + q, args.get("chunks").toString(), roles,
+                        "sestacon");
             }
             case "sestacon_delete" -> send("DELETE",
-                    sestaconBaseUrl + "/api/documents/" + enc(requireText(args, "documentId").asText()), null, roles);
+                    sestaconBaseUrl + "/api/documents/" + enc(requireText(args, "documentId").asText()), null, roles,
+                    "sestacon");
             case "sestacon_version" -> send("GET",
                     sestaconBaseUrl + "/api/documents/" + enc(requireText(args, "documentId").asText()) + "/version",
-                    null, roles);
+                    null, roles, "sestacon");
             default -> throw new IllegalArgumentException("unknown sestacon tool: " + name);
         };
         if (r.statusCode() >= 400) {
@@ -210,7 +221,38 @@ public class McpAggregator {
         return t;
     }
 
-    private HttpResponse<String> send(String method, String url, String body, String roles) throws Exception {
+    /** Apply the same per-provider rate-limit / circuit-breaker / bulkhead guards as the REST proxy. */
+    private HttpResponse<String> send(String method, String url, String body, String roles, String provider)
+            throws Exception {
+        if (!rateLimiters.forProvider(provider).tryConsume()) {
+            throw new UpstreamUnavailable(provider + " rate limit exceeded");
+        }
+        CircuitBreaker breaker = breakers.forProvider(provider);
+        if (!breaker.allow()) {
+            throw new UpstreamUnavailable(provider + " circuit open");
+        }
+        Bulkhead bulkhead = bulkheads.forProvider(provider);
+        if (!bulkhead.tryAcquire()) {
+            throw new UpstreamUnavailable(provider + " at capacity");
+        }
+        try {
+            HttpResponse<String> r = rawSend(method, url, body, roles);
+            int s = r.statusCode();
+            if (s == 502 || s == 503 || s == 504) {
+                breaker.recordFailure();
+            } else {
+                breaker.recordSuccess();
+            }
+            return r;
+        } catch (Exception transportFailure) {
+            breaker.recordFailure();
+            throw transportFailure;
+        } finally {
+            bulkhead.release();
+        }
+    }
+
+    private HttpResponse<String> rawSend(String method, String url, String body, String roles) throws Exception {
         HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(url)).timeout(timeout);
         if (roles != null && !roles.isBlank()) {
             b.header("X-Roles", roles);
@@ -222,6 +264,13 @@ public class McpAggregator {
             b.method(method, HttpRequest.BodyPublishers.noBody());
         }
         return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** An upstream guard (rate limit, open circuit, or bulkhead) refused the call. */
+    static final class UpstreamUnavailable extends RuntimeException {
+        UpstreamUnavailable(String message) {
+            super(message);
+        }
     }
 
     private static JsonNode requireText(JsonNode args, String field) {
