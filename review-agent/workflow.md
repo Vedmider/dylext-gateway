@@ -48,6 +48,17 @@ only the tools needed. Typical calls:
 - `dylext.impact_of(symbol_or_diff)` — callers, callees, affected tests
 - `sestacon.retrieve(query)` — ADRs, design docs, conventions
 
+### Tool-call patterns (validated by the Dylext tester agent)
+
+- For a symbol-level change: `impact_of` first → `expand` only the callers that
+  matter → `search_symbols` for tests.
+- For a structural change: `outline` → `get_digest` → `impact_of` on the
+  changed symbols.
+- For a doc-dependent rule (`ARC-00`, `ARC-10`, `GEN-17`): `sestacon.retrieve`
+  **before** evaluating the rule; if docs are empty, downgrade to `question`.
+- To confirm a suspected bug: `expand` the changed span → state the failing
+  input in plain English → `verify_claims` → only then emit `major`.
+
 Batch tool calls where sensible. Do not call tools whose evidence you will not
 use in a finding.
 
@@ -94,3 +105,4 @@ Ask the user if they want:
 - a re-run after fixes
 
 Do not proceed to posting anywhere on your own.
+

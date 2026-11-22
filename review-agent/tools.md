@@ -11,8 +11,8 @@ Register the gateway in your MCP client config:
 {
   "mcpServers": {
     "dylext-gateway": {
-      "transport": "http",
-      "url": "http://localhost:18070/mcp"
+      "url": "http://localhost:18070/mcp",
+      "headers": { "X-Roles": "engineering" }
     }
   }
 }

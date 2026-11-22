@@ -46,3 +46,11 @@ tools in `tools.md`, reason over the evidence, and emit the report.
 If a rule requires evidence you cannot obtain with the available tools, emit
 the finding as a `question` (severity `minor`) explaining what evidence is
 missing, rather than guessing. Do not promote a guess to `blocker`.
+
+## Degradation
+
+If `sestacon.retrieve` returns empty (Sestacon down or no docs ingested):
+- Rules that *require* docs (`ARC-00`, `ARC-00e`, `ARC-10`, `ARC-11`, `GEN-17`)
+  become `question` findings, not `blocker`/`major`.
+- Code-only rules (`GEN-08`, `JAV-07`, `PYT-07`, `TS-07`) run normally.
+- State in the report that doc-context was unavailable.
