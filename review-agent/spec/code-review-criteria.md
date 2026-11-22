@@ -8,7 +8,7 @@ This document establishes the canonical specification structure, review profile 
 
 ### Framework Metadata
 
-- **Spec Version:** 1.6.0
+- **Spec Version:** 1.7.0
 - **Suite ID:** `canonical-code-review-criteria`
 - **Default Profile:** `standard-backend`
 - **Core Module Files:**
@@ -16,8 +16,9 @@ This document establishes the canonical specification structure, review profile 
     2. `code-review-criteria-general.md` (Prefix: `GEN-xx`, Rules: `GEN-01..GEN-18` [including `GEN-07a`]) — Google review discipline, clean code, naming/CQS, security, testing, observability, performance, dependencies, and config hygiene.
     3. `code-review-criteria-java.md` (Prefix: `JAV-xx`, Rules: `JAV-01..JAV-11`) — Java types, null/Optional safety, collections/streams, exceptions, resource lifecycles, Spring DI/transactions, concurrency, Virtual Threads/reactive safety, and JVM/GC efficiency.
     4. `code-review-criteria-golang.md` (Prefix: `GOL-xx`, Rules: `GOL-01..GOL-12`) — Go idioms, error wrapping, context lifecycles, goroutine safety, interface design, package naming, slice/defer memory hygiene, zero values, and table-driven testing based on Effective Go, Go Code Review Comments, and Google Go Style Guide.
-    5. **Future Language Packs (Extensible):** `code-review-criteria-python.md` (Prefix: `PYT-xx`), `code-review-criteria-typescript.md` (Prefix: `TS-xx`).
-
+    5. `code-review-criteria-python.md` (Prefix: `PYT-xx`, Rules: `PYT-01..PYT-18`) — Python typing, mutable defaults, exceptions, context managers, asyncio event-loop safety, cancellation, advanced typing (`Protocol`/`TypedDict`/`NewType`/`Literal`/`Final`/`ClassVar`), mypy suppression discipline, modern asyncio primitives (`TaskGroup`/`timeout`/`Semaphore`/`Queue`/`shield`), and dataclass immutability.
+    6. `code-review-criteria-typescript.md` (Prefix: `TS-xx`, Rules: `TS-01..TS-12`) — TypeScript strict mode and extra flags, `any` elimination, narrowing and assertions, discriminated unions and generics, promise discipline (`no-floating-promises`/`no-misused-promises`/`require-await`), unhandled rejections, error typing, and module hygiene.
+    7. **Future Language Packs (Extensible):** any new `[PREFIX]-xx` module per §5.
 ### Severity Level Definitions
 
 | Severity | Rank | Blocks Merge | Definition & Impact Criteria |
@@ -36,7 +37,7 @@ This document establishes the canonical specification structure, review profile 
 Every profile enforces a hard active-section cap:
 
 1. `quick-pr`: **4–5 sections** (auto-escalates to `standard-backend` if `diff.loc > 150` or `>= 2` architectural triggers fire).
-2. `standard-backend`: **6–7 sections** (auto-escalates to `architecture-and-saga` if `diff.loc > 600` or `>= 2` deep triggers fire among `touches_messaging`, `touches_state_machine`, `touches_ddl`, or `touches_spring + hot_path`).
+2. `standard-backend`: **6–7 sections** (auto-escalates to `architecture-and-saga` if `diff.loc > 600` or `>= 2` deep triggers fire among `touches_messaging`, `touches_state_machine`, `touches_ddl`, or `touches_spring + hot_path` , touches_async` (Python/TS), `error_handling` (TS)).
 3. `architecture-and-saga`: **8–10 sections** (full evaluation, unbounded LOC).
 
 ### Profile 0: `design-review` (Type A — Pre-Implementation Design / ADR Gate)
@@ -61,6 +62,8 @@ Every profile enforces a hard active-section cap:
 - **Conditional Language Sections:**
     - `JAV-S1`: Java Types, Optional/Null Discipline, Collections & Exceptions (when `diff.languages` contains `"java"`)
     - `GOL-S1`: Go Idioms, Error Handling, Naming & Interface Design (when `diff.languages` contains `"golang"`)
+    - `PYT-S1`: Python Types, Typing & Exception Discipline (when `diff.languages` contains `"python"`)
+    - `TS-S1`: TypeScript Type System, Strictness & Module Hygiene (when `diff.languages` contains `"typescript"`)
 - **Skip Triggers:** Skip entire evaluation when `diff.only_docs_or_comments == true` OR `diff.is_generated_only == true`
 
 ### Profile 2: `standard-backend`
@@ -81,6 +84,10 @@ Every profile enforces a hard active-section cap:
     - `ARC-S1`: Distributed Workflows, Sagas & Event Consistency (when non-Java/non-Go diff and `diff.touches_messaging == true`)
     - `GOL-S2`: Go Concurrency, Contexts, Memory & Performance Hygiene (priority when `diff.languages` contains `"golang"` and (`diff.touches_concurrency == true` or `diff.hot_path == true`))
     - `GOL-S1`: Go Idioms, Error Handling, Naming & Interface Design (when `diff.languages` contains `"golang"` and `GOL-S2` is not active)
+    - `PYT-S2`: Python Async, Concurrency & Resource Hygiene (priority when `diff.languages` contains `"python"` and (`diff.touches_async == true` or `diff.hot_path == true`))
+    - `PYT-S1`: Python Types, Typing & Exception Discipline (when `diff.languages` contains `"python"` and `PYT-S2` is not active)
+    - `TS-S2`: TypeScript Async, Error Handling & Runtime Safety (priority when `diff.languages` contains `"typescript"` and (`diff.touches_async == true` or `diff.error_handling == true`))
+    - `TS-S1`: TypeScript Type System, Strictness & Module Hygiene (when `diff.languages` contains `"typescript"` and `TS-S2` is not active)
 - **Skip Triggers:** Skip evaluation when `diff.is_generated_only == true`
 
 ### Profile 3: `architecture-and-saga`
@@ -102,6 +109,10 @@ Every profile enforces a hard active-section cap:
     - `JAV-S2`: Concurrency, Virtual Threads, JVM/GC & Spring Runtime Hygiene (when `diff.languages` contains `"java"`)
     - `GOL-S1`: Go Idioms, Error Handling, Naming & Interface Design (when `diff.languages` contains `"golang"`)
     - `GOL-S2`: Go Concurrency, Contexts, Memory & Performance Hygiene (when `diff.languages` contains `"golang"`)
+    - `PYT-S1`: Python Types, Typing & Exception Discipline (when `diff.languages` contains `"python"`)
+    - `PYT-S2`: Python Async, Concurrency & Resource Hygiene (when `diff.languages` contains `"python"`)
+    - `TS-S1`: TypeScript Type System, Strictness & Module Hygiene (when `diff.languages` contains `"typescript"`)
+    - `TS-S2`: TypeScript Async, Error Handling & Runtime Safety (when `diff.languages` contains `"typescript"`)
 - **Skip Triggers:** None (full evaluation mandatory)
 
 ---
@@ -123,7 +134,10 @@ Every profile enforces a hard active-section cap:
 | **JAV** | `JAV-S2`: Java Concurrency & Spring | **Skip** | **Skip** | **Conditional** | **Conditional** | `diff.languages` contains `"java"` AND (`touches_spring` OR `hot_path`) |
 | **GOL** | `GOL-S1`: Go Idioms, Error Handling & Interfaces | **Skip** | **Conditional** | **Conditional** | **Conditional** | `diff.languages` contains `"golang"` |
 | **GOL** | `GOL-S2`: Go Concurrency, Memory & Contexts | **Skip** | **Skip** | **Conditional** | **Conditional** | `diff.languages` contains `"golang"` AND (`touches_concurrency` OR `hot_path`) |
-| **PYT** | `PYT-S1`: Python Typing & Async | **Skip** | **Conditional** | **Conditional** | **Conditional** | `diff.languages` contains `"python"` (Extensible) |
+| **PYT** | `PYT-S1`: Python Types, Typing & Exceptions | **Skip** | **Conditional** | **Conditional** | **Conditional** | `diff.languages` contains `"python"` |
+| **PYT** | `PYT-S2`: Python Async & Concurrency | **Skip** | **Skip** | **Conditional** | **Conditional** | `diff.languages` contains `"python"` AND (`touches_async` OR `hot_path`) |
+| **TS** | `TS-S1`: TypeScript Types, Strictness & Imports | **Skip** | **Conditional** | **Conditional** | **Conditional** | `diff.languages` contains `"typescript"` |
+| **TS** | `TS-S2`: TypeScript Async, Errors & Runtime Safety | **Skip** | **Skip** | **Conditional** | **Conditional** | `diff.languages` contains `"typescript"` AND (`touches_async` OR `error_handling`) |
 | **TOTAL** | **Active Section Count Range** | **1–2 Sections** | **4–5 Sections** | **6–7 Sections** | **8–10 Sections** | *Strict adherence to target section budgets* |
 
 ---
@@ -193,6 +207,37 @@ Every profile enforces a hard active-section cap:
 | | `go-memory-slices-defer` | `GOL-10`, `GOL-11` | Slice preallocation, defer execution order, and resource unwinding |
 | | `go-zero-values-init` | `GOL-05` | Useful zero-value design and avoiding `init()` side effects |
 | | `go-testing-table-driven` | `GOL-06` | Table-driven unit testing, subtests, and parallel test execution |
+| **Python Engineering** | `py-type-coverage` | `PYT-01` | Type annotations on public boundaries, built-in generics, explicit `Optional` |
+| | `py-mutable-defaults` | `PYT-02` | Mutable default arguments and dataclass mutable fields |
+| | `py-exception-discipline` | `PYT-03` | Specific exception handling, no bare `except`, no control-flow exceptions |
+| | `py-resource-lifecycle` | `PYT-04` | Context managers (`with`/`async with`/`ExitStack`/`aclosing`) for deterministic cleanup |
+| | `py-import-naming-style` | `PYT-05` | Import grouping, no wildcard imports, PEP 8 naming, layout |
+| | `py-docstrings` | `PYT-06` | Google-format docstrings on public API |
+| | `py-async-event-loop` | `PYT-07` | No blocking synchronous I/O inside `async def` |
+| | `py-async-await` | `PYT-08` | Every coroutine awaited or explicitly scheduled |
+| | `py-async-loop-management` | `PYT-09` | `asyncio.run` at entry, no manual loop creation |
+| | `py-async-cancellation` | `PYT-10` | `CancelledError` re-raised after cleanup |
+| | `py-async-cpu-offload` | `PYT-11` | CPU-bound work offloaded from the event loop |
+| | `py-async-session-reuse` | `PYT-12` | Single async client/session/pool reused across requests |
+| | `py-comparisons` | `PYT-13` | `is`/`is not` for singletons, `isinstance` over `type() ==`, quote and trailing-comma discipline |
+| | `py-iteration-idioms` | `PYT-14` | `.items()`/`enumerate`/`zip`/comprehensions/generator expressions |
+| | `py-mutable-global-state` | `PYT-15` | No mutable module-level or class-level state mutated across imports |
+| | `py-advanced-typing` | `PYT-16` | `Protocol`/`TypedDict`/`NewType`/`Literal`/`Final`/`ClassVar`, suppression discipline |
+| | `py-async-modern-primitives` | `PYT-17` | `TaskGroup`/`timeout`/`Semaphore`/`Queue`/`shield`/task naming |
+| | `py-dataclass-immutability` | `PYT-18` | `frozen=True`, `__post_init__`, `slots=True`, `order=True`, `field(...)` |
+| **TypeScript Engineering** | `ts-strict-mode` | `TS-01` | `strict: true` plus `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`, `noPropertyAccessFromIndexSignature` |
+| | `ts-no-any` | `TS-02` | No `any`; `unknown` + narrowing; `no-unsafe-*` family enabled |
+| | `ts-narrowing-assertions` | `TS-03` | Runtime narrowing preferred over `as`/`!`; `satisfies` for literal checking; `asserts x is T` |
+| | `ts-interface-unions` | `TS-04` | `interface` for shapes; discriminated unions with exhaustive `never` default |
+| | `ts-generics-utility` | `TS-05` | Standard utility types; meaningful generic names; `extends` constraints |
+| | `ts-imports-naming` | `TS-06` | `import type`; `UpperCamelCase`/`lowerCamelCase`/`CONSTANT_CASE` |
+| | `ts-floating-promises` | `TS-07` | No floating promises; no `async` inside `forEach`; `no-misused-promises` |
+| | `ts-unhandled-rejection` | `TS-08` | Every rejection handled at call site; `try`/`catch` around fallible `await`; `require-await` |
+| | `ts-error-typing` | `TS-09` | `catch (e: unknown)` narrowed with `instanceof Error`; custom error classes |
+| | `ts-runtime-safety` | `TS-10` | Indexed access narrowed under `noUncheckedIndexedAccess`; property initialization enforced |
+| | `ts-async-concurrency` | `TS-11` | Bounded concurrency for user-controlled `Promise.all`; `allSettled` for partial failure |
+| | `ts-type-performance` | `TS-12` | Simplest type construct; avoid deep conditional/mapped types in public APIs |
+
 
 ---
 
@@ -220,17 +265,14 @@ Language pack authors must implement all sections using the following structural
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `[PREFIX]-01` | `kebab-dimension` | Description of precise criteria to inspect | Context trigger predicate | Concrete evidence of compliant code | Concrete pattern causing failure | `blocker \| major \| minor \| nit` |
 
-### 5.3 Example Implementation: Python Language Pack (`code-review-criteria-python.md`)
+### 5.3 Implemented Language Packs
 
-**Section ID:** `PYT-S1: Python Typing, Async & Resource Hygiene (Example Language Pack)`
-- **Target Profiles:** `quick-pr` (Conditional), `standard-backend` (Conditional), `architecture-and-saga` (Conditional)
-- **Scope & Evaluation Triggers:** Evaluated when `diff.languages` contains `"python"`.
+The Python and TypeScript language packs are now implemented and should be used as the canonical reference for future packs:
 
-| Rule ID | Mapped Dimension(s) | Review Check / Condition | Evaluation Trigger | Pass Signal (Expected) | Fail Anti-Pattern | Severity |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `PYT-01` | `py-async-event-loop` | Avoid blocking synchronous I/O inside `async def` coroutines | Defining or calling I/O inside async functions | Async I/O uses non-blocking clients (`httpx`, `asyncpg`) or `asyncio.to_thread` | Blocking `requests.get()` or `time.sleep()` stalling the asyncio event loop | `blocker` |
-| `PYT-02` | `py-mutable-defaults-typing` | Avoid mutable default arguments and untyped public boundaries | Defining public functions or dataclass fields | Default arguments use `None` or `dataclasses.field(default_factory=...)`; public signatures include type annotations | Mutable list/dict literals in `def f(items=[])` causing cross-call state leaks | `major` |
+- `code-review-criteria-python.md` — 18 rules (`PYT-01..PYT-18`), 2 sections (`PYT-S1`, `PYT-S2`)
+- `code-review-criteria-typescript.md` — 12 rules (`TS-01..TS-12`), 2 sections (`TS-S1`, `TS-S2`)
 
+New language packs should follow the same structure: authoritative guidance subsections (`§A..§L` or shorter), 2 sections, and rule IDs `[PREFIX]-01..[PREFIX]-NN` appended monotonically.
 ---
 
 ## 6. AI Review Agent Execution & Noise-Suppression Contract
@@ -239,9 +281,8 @@ Automated LLM/AST code review agents executing this specification **MUST** stric
 
 1. **Diff-Hunk Anchoring:** Anchor findings strictly to modified lines (`+` hunks) or direct callers/callees impacted by the diff; never emit unprompted findings on untouched legacy code unless required by `GEN-04` (Boy Scout trajectory).
 2. **Confidence, Evidence Object & Failing-State Gate:** Every finding MUST include an explicit evidence object (raw Dylext AST/call-graph/git output, Sestacon doc/ADR citation, or quoted diff/spec passage) plus the specific failing input or state for logic/boundary defects. Findings lacking concrete evidence MUST be dropped—never invent a standard or rule ID.
-3. **CI Linter Deduplication:** Do not emit formatting, import-ordering, or trivial style nits already covered by Checkstyle, Spotless, ErrorProne, SpotBugs, `golangci-lint`, or Ruff. When a language pack is added, extend this list with that language's canonical linter/type-checker.
-4. **Canonical Comment Output Format:** Every review comment must render deterministically as:
-   `[<RuleID>][<severity>] <Concise Problem Statement> — **Why:** <Impact/Invariant violated>. **Evidence:** <Symbol/Line, Failing Input/State, or ADR Quote>. **Fix:** <Concrete recommendation>.`
+3. **CI Linter Deduplication:** Do not emit formatting, import-ordering, or trivial style nits already covered by Checkstyle, Spotless, ErrorProne, SpotBugs, `golangci-lint`, Ruff, `mypy`, `pyright`, `tsc --noEmit`, or `typescript-eslint`. When a language pack is added, extend this list with that language's canonical linter/type-checker.
+4. **Canonical Comment Output Format:** Every review comment must render deterministically as: `[<RuleID>][<severity>] <Concise Problem Statement> — **Why:** <Impact/Invariant violated>. **Evidence:** <Symbol/Line, Failing Input/State, or ADR Quote>. **Fix:** <Concrete recommendation>.`
 5. **Merge Gate Summary:** Emit a final verdict block (`APPROVE`, `COMMENT`, or `REQUEST_CHANGES`) driven strictly by whether any finding has `blocks_merge == true` (`blocker` or `major`).
 6. **Multi-Pass Evaluation & Context Lookup:** Evaluate `blocker` security/transaction/concurrency rules first; when `blocker` findings exist, suppress `nit` comments to reduce review noise; inspect caller/callee call graphs and DB schemas outside the diff hunk before raising cross-boundary or N+1 findings.
 7. **Reviewer Courtesy & Actionability Standard (GEN-04 Communication Standard):** Maintain a respectful, empathetic, and constructive tone in all review comments. Findings must clearly state the rationale, propose concrete fixes, and avoid pedantic or purely subjective criticism.
