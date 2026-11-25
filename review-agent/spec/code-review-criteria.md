@@ -8,11 +8,11 @@ This document establishes the canonical specification structure, review profile 
 
 ### Framework Metadata
 
-- **Spec Version:** 1.7.0
+- **Spec Version:** 1.8.0
 - **Suite ID:** `canonical-code-review-criteria`
 - **Default Profile:** `standard-backend`
 - **Core Module Files:**
-    1. `code-review-criteria-architecture.md` (Prefix: `ARC-xx`, Rules: `ARC-00..ARC-11` [including `ARC-00e`]) — Pure system architecture, distributed consistency, state machines, resiliency, and zero-downtime schema migrations.
+    1. `code-review-criteria-architecture.md` (Prefix: `ARC-xx`, Rules: `ARC-00..ARC-18` [including `ARC-00e`]) — Pure system architecture, distributed consistency, state machines, resiliency, zero-downtime schema migrations, and technical design-specification completeness (model semantics, algorithms, incremental-update correctness, evidence provenance, formal API contracts, security/trust boundaries, operational lifecycle).
     2. `code-review-criteria-general.md` (Prefix: `GEN-xx`, Rules: `GEN-01..GEN-18` [including `GEN-07a`]) — Google review discipline, clean code, naming/CQS, security, testing, observability, performance, dependencies, and config hygiene.
     3. `code-review-criteria-java.md` (Prefix: `JAV-xx`, Rules: `JAV-01..JAV-11`) — Java types, null/Optional safety, collections/streams, exceptions, resource lifecycles, Spring DI/transactions, concurrency, Virtual Threads/reactive safety, and JVM/GC efficiency.
     4. `code-review-criteria-golang.md` (Prefix: `GOL-xx`, Rules: `GOL-01..GOL-12`) — Go idioms, error wrapping, context lifecycles, goroutine safety, interface design, package naming, slice/defer memory hygiene, zero values, and table-driven testing based on Effective Go, Go Code Review Comments, and Google Go Style Guide.
@@ -42,10 +42,13 @@ Every profile enforces a hard active-section cap:
 
 ### Profile 0: `design-review` (Type A — Pre-Implementation Design / ADR Gate)
 
-- **Target Section Budget:** 1–2 sections (`ARC-S0` + conditional `ARC-S1`/`ARC-S4` when distributed/infra decisions are proposed)
+- **Target Section Budget:** 1–3 sections (`ARC-S0` + `ARC-S0b`; `ARC-S5` when the spec defines a data/graph model, derived index, evidence output, API surface, or operational lifecycle; conditional `ARC-S1`/`ARC-S4` when distributed/infra decisions are proposed)
 - **Severity Floor:** `nit`
 - **Required Sections:**
     - `ARC-S0`: Pre-Implementation Design & ADR Review Gate
+    - `ARC-S0b`: Acceptance Criteria & Feature-Goal Traceability
+- **Conditional Sections:**
+    - `ARC-S5`: Technical Design Specification Completeness (when the design defines domain entities, a symbol/data graph, core algorithms, API/tool contracts, or operational lifecycle)
 - **Skip Triggers:** Pure code diffs with no design doc, RFC, or ADR submitted.
 
 ### Profile 1: `quick-pr`
@@ -122,10 +125,12 @@ Every profile enforces a hard active-section cap:
 | Module | Section ID & Name | `design-review` (1–2) | `quick-pr` (4–5) | `standard-backend` (6–7) | `architecture-and-saga` (8–10) | Selection Trigger & Escalation Rule |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **ARC** | `ARC-S0`: Pre-Implementation Design & ADR Gate | **Required** | **Skip** | **Skip** | **Conditional** | Conditional on ADR/design doc submitted |
+| **ARC** | `ARC-S0b`: Acceptance Criteria & Feature-Goal Traceability | **Required** | **Skip** | **Skip** | **Conditional** | Conditional on ADR/design doc submitted |
 | **ARC** | `ARC-S1`: Distributed Workflows & Sagas | **Conditional** | **Skip** | **Conditional** | **Required** | `diff.touches_messaging == true` (Standard) |
 | **ARC** | `ARC-S2`: Layer Boundaries & Isolation | **Skip** | **Skip** | **Required** | **Required** | Base requirement for backend / arch reviews |
 | **ARC** | `ARC-S3`: State Machines & CQRS | **Skip** | **Conditional** | **Conditional** | **Required** | `diff.touches_state_machine == true` OR `blast_radius > 1` |
 | **ARC** | `ARC-S4`: Resiliency & Backpressure | **Conditional** | **Skip** | **Required** | **Required** | Base requirement for backend / arch reviews |
+| **ARC** | `ARC-S5`: Technical Design Specification Completeness | **Conditional** | **Skip** | **Skip** | **Conditional** | Design doc/ADR defines a model, index, evidence output, API surface, or lifecycle |
 | **GEN** | `GEN-S1`: Google Review Discipline | **Skip** | **Required** | **Required** | **Required** | Always active across all profiles |
 | **GEN** | `GEN-S2`: Clean Code & Naming | **Skip** | **Required** | **Required** | **Required** | Always active across all profiles |
 | **GEN** | `GEN-S3`: Security, Errors & Testing | **Skip** | **Required** | **Required** | **Required** | Always active across all profiles |
@@ -159,6 +164,13 @@ Every profile enforces a hard active-section cap:
 | | `arch-zero-downtime-migrations` | `ARC-09` | Expand-contract DDL, backward compatibility & safe rollouts |
 | | `arch-data-partitioning-sharding` | `ARC-10` | Partitioning before sharding, shard-key query justification & cross-shard bounds |
 | | `arch-caching-ttl-invalidation` | `ARC-11` | Cache TTL derived from change frequency, invalidation strategy & staleness bounds |
+| | `arch-domain-model-semantics` | `ARC-12` | Canonical domain/data model fully specified; status/type/certainty/provenance as orthogonal dimensions |
+| | `arch-algorithm-specification` | `ARC-13` | Core traversal/ranking/resolution algorithms specified: direction, depth, cycles, confidence propagation |
+| | `arch-incremental-invalidation-correctness` | `ARC-14` | Incremental/derived-state update correctness (no-stale) model & disambiguating invalidation keys |
+| | `arch-evidence-provenance-model` | `ARC-15` | Evidence/findings carry source, location, revision, provider, confidence; static vs. execution vs. coverage kept distinct |
+| | `arch-formal-interface-contracts` | `ARC-16` | Formal tool/API contracts: inputs, validation, output schema, errors, timeout, pagination, versioning |
+| | `arch-security-trust-boundaries` | `ARC-17` | Trust/security boundary model: untrusted content, path/arg safety, prompt-injection boundary, secrets, ACLs |
+| | `arch-operational-lifecycle` | `ARC-18` | Operational lifecycle, recovery guarantees, migration (rebuildable vs. user data), resource limits, upgrade |
 | **Google Industry Standards** | `std-google-small-cls` | `GEN-01` | Small, focused change sets (< 200–400 LOC) |
 | | `std-google-clarity-over-cleverness` | `GEN-02` | Clear, explicit code over clever short-cuts |
 | | `std-google-why-comments` | `GEN-03` | Document rationale and design intent, not redundant mechanics |
