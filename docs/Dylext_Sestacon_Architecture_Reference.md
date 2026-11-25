@@ -410,6 +410,16 @@ Because Dylext's preflight and impact accuracy depend on trustworthy symbol grap
 * **Branch Switch, Rebase & Force-Push:** Because snapshots are keyed by `(repo_id, base_revision, worktree_fingerprint)` rather than assuming linear commit history, switching branches, rebasing, or force-pushing simply resolves the new commit SHA and looks up or builds the corresponding `Snapshot`—without corrupting prior snapshots.  
 * **Failure & Corruption Recovery:** If indexing fails or times out, the `Snapshot` transitions to `failed` with diagnostic error details and never becomes visible as `ready`. If SQLite detects corruption or an incompatible schema version, Dylext quarantines the file (`*.corrupt`) and rebuilds cleanly from Git (INV-02, INV-04) — this disposal-and-rebuild path is valid **only** because the Dylext index is derived; it is never applied to Sestacon's user-authored store (see §13.C).
 
+### D. Repository Shapes & Odd Files
+
+Real repositories are not a single flat module of clean UTF-8, so the indexer defines explicit behavior for awkward shapes:
+
+* **Multi-module / monorepo:** a `repo_id` may contain many build modules; `Symbol`/`File` carry full repo-relative paths so module boundaries are preserved, and ranking (ADR-03) prefers same-module context. A monorepo is one `repo_id`, not many — cross-module edges are normal graph edges.
+* **Submodules & nested repos:** each git submodule / nested working repo is resolved as its **own `repo_id`** at its own revision; Dylext never silently flattens a submodule's files into the parent's graph. Cross-repo references are left `unresolved_external` unless both repos are indexed, in which case the link is expressed through the three-level identity (§7), never by path guessing.
+* **Worktrees:** multiple git worktrees sharing one object store are distinct working trees; each resolves to its own `(repo_id, base_revision, worktree_fingerprint)` snapshot (§12), so two worktrees of the same repo never collide.
+* **Symlinks:** followed only within the workspace root; links escaping the root or forming loops are rejected/bounded (§23). Symlinked files are indexed by their canonical in-repo path once.
+* **Odd files:** binary and generated files are tagged (`skipped_binary` / `skipped_generated`) not parsed; empty files index to zero symbols (not an error); oversized files past the configured cap are skipped with a recorded reason. **Encoding:** files are decoded as UTF-8 (with BOM tolerated); invalid-encoding files are marked `parse_error`, never silently mis-indexed. Line endings are normalized for `content_hash` so a pure CRLF↔LF change does not spuriously mint a new snapshot or invalidate symbols.
+
 ---
 
 ## 15\. Workflow Architecture
@@ -582,6 +592,10 @@ Exact structural search answers "who calls `X`" precisely but cannot answer "whe
 3. **Verify:** the resolved symbol is confirmed against the live graph (real symbol, exact signature, callers, revision) exactly as `verify_claims` does; only verified symbols enter the evidence bundle, carrying `evidence_provenance.provider = embedding` with its confidence.
 
 So embeddings supply **recall**; the graph supplies **truth**. A hit that cannot be grounded to a real symbol is dropped (or surfaced as an explicit `unverified` candidate), never presented as structure. This keeps the bundle precise, provenance-stamped, and revision-aware while extending it to intent-based discovery. The semantic score feeds ADR-03 ranking as one signal; it never dominates exact structural relevance.
+
+### F. Parser Conformance Contract (Adding a Language)
+
+Multi-language output stays consistent only if every parser emits the same shape. Each `ParserPort` implementation MUST produce the **neutral symbol descriptor** (§18.A): per declaration a `kind`, `qualified_name`, `span`, `visibility`, `is_test_symbol`; per reference an `edge_type` with a raw target descriptor and `receiver` so resolution (§18.C) can bind it. A language is "supported" only when it passes a shared **conformance fixture** — a sample source file plus its expected normalized symbols/edges — so overloads, nested/anonymous types, generics erasure, and call-target shapes are verified identically across Java/Python/Go/TypeScript and any future pack. A parser that is configured but unreachable or failing conformance is reported honestly (INV-07, `parser_unreachable` / `degraded`), never treated as "no symbols." Adding a language = implement the descriptor + pass the conformance fixture + register the extension; it never requires touching the graph/resolution core.
 
 ---
 
@@ -1084,3 +1098,67 @@ Routing guidance drifts over a long session: an agent that fell back to native t
 * **Optional supporting signal.** Where the host exposes it, the agent may glance at its own recent tool-usage mix (or Dylext's served-vs-baseline accounting) as objective input to the reflection — but the self-check works with nothing more than the agent's own awareness, so it is available on every host.
 
 The intent matches ADR-10: we never force the agent back to MCP; we give it a gentle, self-triggered habit of noticing tool drift and re-routing when MCP would genuinely serve it better. Soft reminder, owned by the agent — not a hard gate.
+
+
+
+---
+
+## 27. Configuration Reference
+
+All tunables named throughout this document, consolidated so an operator has one place to set them. Defaults are starting points, not frozen constants (per the Level 3 note). Configuration lives outside the core domain (§3) and is environment/config-file driven; a change that alters answer shape invalidates affected caches (INV-06).
+
+| Key | Default | Unit | Affects / Section |
+| :--- | :--- | :--- | :--- |
+| `fast_path_p95_target` | 300 | ms | Fast Path warm single-caller latency budget (§4) |
+| `fast_path_p95_concurrent_target` | 300–800 | ms | p95 under `concurrency_target` callers (§17.A) |
+| `concurrency_target` | 4 | callers | Concurrency level the latency budget is held at (§17.A) |
+| `request_work_cap.nodes` | e.g. 50k | nodes | Max graph nodes traversed/request before `index_partial` (§17.A, §19) |
+| `request_work_cap.candidates` | e.g. 2k | items | Max ranking candidates/request (§17.A, ADR-03) |
+| `token_budget.default` | per-tool | tokens | Default evidence budget, capped by Gateway ceiling (§5.E, §16) |
+| `token_budget.ceiling` | deploy-set | tokens | Hard upper bound the Gateway enforces (§16.A) |
+| `envelope_overhead_ceiling` | 0.20 | fraction | Max metadata/`tokens_used`; over → `metadata_heavy` (§16.A, §10.6) |
+| `timeout_ms.root` | per-request | ms | Root request deadline (§16.A, §17.B) |
+| `sqlite.busy_timeout` | 5000 | ms | WAL writer contention wait (§17.A) |
+| `max_depth` | 5 | hops | `analyze_impact` traversal bound (§19) |
+| `hot_name_threshold` | tune | refs | Above this, edge-reopen is deferred/lazy (§20.B) |
+| `max_sync_reopen` | tune | edges | Cap on synchronous edge reopen; overflow → background (§20.B) |
+| `dirty_snapshot_lru` | 8 | snapshots | Live dirty overlays kept per `repo_id` (§13.C) |
+| `save_debounce_ms` | 500 | ms | Coalesce editor saves before a new overlay (§13.C) |
+| `analysis_result_ttl` | 24 | hours | `AnalysisResult`/`Evidence` retention for `get_evidence` (§16.B) |
+| `analysis_result_ring` | deploy-set | rows | Max-row ring buffer bounding analysis retention (§16.B) |
+| `snapshot_retention_commits` | N | commits | Committed snapshots kept before compaction (§13.C) |
+| `parser.timeout_per_file` | tune | ms | Per-file parse timeout → `parse_error` (§14.B) |
+| `parser.health_ttl` | 5 | s | Sidecar reachability probe cache (§14.B, INV-07) |
+| `max_file_bytes` / `max_repo_bytes` | tune | bytes | Oversize skip thresholds (§14.D, §24) |
+| `sestacon.probe_ttl` | short | s | Reachability probe to avoid per-request timeouts (§24) |
+| `retrieval.min_score` | tune | score | Sestacon no-match floor (prose relevance) |
+| `verbosity` | `compact` | enum | Envelope richness (`compact`\|`full`) (§16.A) |
+| `contract_version` | SemVer | — | Advertised MCP contract version (§22.G) |
+
+---
+
+## 28. Validation & Quality Strategy
+
+§10 proves the **cost** claim; this section defines how the **correctness** of the evidence is validated — the property the whole trust thesis depends on (§17.D). A token win on wrong context is worthless, so correctness gates ship alongside the cost benchmark.
+
+* **Graph correctness (precision/recall):** a labeled fixture corpus with known ground truth per language measures symbol-extraction completeness and relationship precision/recall — overloads, generics erasure, nested/anonymous types, constructors, interface/override expansion, DI candidates, and `unresolved_*` honesty. Impact results are scored against hand-verified caller/blast-radius sets; both false callers and missed callers are tracked (not just one).
+* **Parser conformance:** every `ParserPort` passes the shared conformance fixture (§18.F) before a language is "supported"; the fixture is a regression gate so a parser change cannot silently alter normalized output.
+* **Freshness & cache invariants:** automated cases assert INV-05/06/07 — per-tool freshness-on-read after a commit, non-git invalidation (signal/generation change), and degraded-source honesty — run with the cache **enabled** and across tool interactions (the conditions under which these defects historically hid).
+* **Contract conformance:** every tool response is validated against its §22 JSON schema (envelope, limitations enum, error shapes); `get_evidence` partial/over-budget and `oneOf` target rules are covered.
+* **Concurrency & resilience:** concurrent readers vs. a background writer, single-writer index serialization, cold-start partial-ready serving, and partial-failure degradation (Sestacon down, analyzer timeout) are exercised under load, with latency reported per concurrency level (§17.A).
+* **Security:** path-traversal/symlink rejection, argument-safe git invocation, git-hook/untrusted-config neutralization (§23), ACL/role scoping, and prompt-injection isolation have explicit negative tests; a leak or executed hook is a release blocker.
+* **Cost regression:** the §10 benchmark (paired CI95, ≥5 runs/arm, first-response sufficiency, envelope overhead) runs as a tracked gate so a change that erodes the token win is caught.
+* **Quality gate:** correctness and security suites are blocking; the cost benchmark is a tracked gate with a regression threshold. A green build means both "answers are right and safe" and "answers are cheaper."
+
+---
+
+## 29. Observability & Metrics
+
+Because the product's value is measured in tokens and latency, those are first-class signals, not afterthoughts. Diagnostics go to stderr (never stdout, which is JSON-RPC-only, §24); metrics are emitted locally and are safe to disable.
+
+* **Token-savings ledger (the KPI):** per analysis and rolling, the served evidence size vs. the baseline a grep+read loop would have cost (served vs. baseline tokens, calls saved). This is the direct, continuous measure of the cost thesis and is surfaced for the agent's self-audit (§26.E).
+* **Latency:** p50/p95 per tool, split warm vs. cold and by concurrency level (§17.A), excluding external LLM time (§4).
+* **Index health:** snapshot build time, index-freshness lag (time between a commit and a `ready` snapshot), `building`/`failed` counts, partial-ready serve rate, and cache hit/miss + invalidation counts (INV-04/05/06).
+* **Evidence quality:** first-response sufficiency rate (§10.5), `get_evidence` follow-up rate, envelope-overhead ratio (§10.6), and `limitations[]` frequency by type (e.g. how often `index_partial` / `sestacon_unavailable` fire).
+* **Degradation signals:** `parser_unreachable`/`degraded` rates (INV-07), Sestacon availability, analyzer timeouts — so silent quality loss becomes visible.
+* **Correlation & privacy:** every record is correlated by `analysis_id` / `repo_id`; no secret values and no source content are emitted to logs or metrics (§23). Metrics are local-first; remote aggregation is a Milestone 5 concern.
